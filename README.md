@@ -9,7 +9,6 @@ Códigos referentes ao projeto de tratamento do açaí utilizando (IoT)
 * [Sobre o Projeto](#-sobre-o-projeto)
 * [Tecnologias e Arquitetura](#️-tecnologias-e-arquitetura)
 * [Cronograma de Desenvolvimento](#-cronograma-de-desenvolvimento)
-* [Como Funciona](#-como-funciona---1-periodo-de-aplicacao)
 * [Funcionalidades](#-funcionalidades-e-status-de-desenvolvimento)
 
 ---
@@ -58,16 +57,10 @@ O sistema é dividido em duas camadas principais:
 - **Data Logging:** Agrupamento de dados para análise de performance da muda.
 - **Interface UI:** Criação de containers e grupos de entrada usando QSS externo no PyQt6.
 
----
 
-## 🚀 Como funciona - 1° periodo de aplicação
-O algoritmo em Python simula a necessidade hídrica e gera uma janela de tempo. Este dado é enviado para o Arduino com o prefixo `'L'`, seguido pelo valor em bytes. O Arduino entra em estado de bloqueio durante a irrigação, garantindo que o ciclo seja completado sem interrupções externas.
-
----
 
 ## ✨ Funcionalidades e Status de Desenvolvimento
 
-- [x] **Comunicação Serial Binária**: Protocolo otimizado em C++/Python usando `Serial.write` para envio de dados sem perda de pacotes.
 - [x] **Interface Modular (HMI)**: UI desenvolvida em PyQt6 com estilização externa via QSS para melhor manutenção.
 - [x] **Gerador de Estresse Hídrico**: Algoritmo Python que calcula e envia intervalos aleatórios de irrigação para o Arduino.
 - [ ] **Data Logging CSV**: Exportação automática dos dados de umidade e tempo de resposta para análise em planilhas.
