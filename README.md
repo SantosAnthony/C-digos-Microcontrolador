@@ -1,55 +1,78 @@
 # 🚀 Códigos-Microcontrolador
-Códigos referentes aos projeto de tratamento do açaí utilizando (IoT)
+Códigos referentes ao projeto de tratamento do açaí utilizando (IoT)
 
-> Uma frase curta e impactante descrevendo o que seu projeto faz (ex: "A forma mais rápida de gerenciar suas tarefas diárias").
+> **Engenharia de precisão aplicada ao cultivo de açaí através de estresse hídrico controlado por IA e Hardware.**
 
 ---
 
 ## 📌 Sumário
 * [Sobre o Projeto](#-sobre-o-projeto)
-* [Tecnologias Utilizadas](#-tecnologias-utilizadas)
-* [Funcionalidades](#-funcionalidades)
-* [Como Executar](#-como-executar)
-* [Licença](#-licença)
+* [Tecnologias e Arquitetura](#️-tecnologias-e-arquitetura)
+* [Cronograma de Desenvolvimento](#-cronograma-de-desenvolvimento)
+* [Como Funciona](#-como-funciona---1-periodo-de-aplicacao)
+* [Funcionalidades](#-funcionalidades-e-status-de-desenvolvimento)
 
 ---
 
 ## 💻 Sobre o Projeto
 
-<img width="600" height="362" alt="image" src="https://github.com/user-attachments/assets/395a0a6f-aa9e-4b29-904a-ac7f5c80516c" />
+<p align="center">
+  <img width="948" height="640" alt="Dashboard do Projeto" src="https://github.com/user-attachments/assets/f0a92b3b-bafd-4ed1-8479-2e36b06bd13b" />
+</p>
 
+# 🎋 Sistema de Monitoramento e Estresse Hídrico - Cultivo de Açaí
 
-O **Nome do Projeto** nasceu da necessidade de [explicar o problema que você resolve]. Ele foca em [performance/design/facilidade de uso], proporcionando uma experiência fluida para o usuário final.
+<p align="center">
+  <img src="https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54" />
+  <img src="https://img.shields.io/badge/c++-%2300599C.svg?style=for-the-badge&logo=c%2B%2B&logoColor=white" />
+  <img src="https://img.shields.io/badge/-Arduino-00979D?style=for-the-badge&logo=Arduino&logoColor=white" />
+</p>
 
-
-
-
-## ✨ Funcionalidades
-
-- [ ] **Funcionalidade A**: Descrição breve de como funciona.
-- [ ] **Funcionalidade B**: O benefício que ela traz.
-- [ ] **Dark Mode**: Suporte nativo a temas escuros e claros.
-- [ ] **API Integrada**: Comunicação em tempo real com serviços externos.
+Este projeto integra **Hardware (IoT)** e **Software** para estudar o comportamento de mudas de açaí sob diferentes regimes de irrigação. Através de um sistema híbrido, simulamos cenários variáveis para coletar dados sobre a resiliência da planta em condições dinâmicas.
 
 ---
 
-## 🚀 Como Executar
+## 🛠️ Tecnologias e Arquitetura
+O sistema é dividido em duas camadas principais:
 
-### Pré-requisitos
-Antes de começar, você vai precisar ter instalado em sua máquina:
-- [Git](https://git-scm.com)
-- [Node.js](https://nodejs.org/en/) (ou outra ferramenta dependendo da stack)
+1. **Camada Digital (Controle e Inteligência):**
+   - **Python & PyQt6:** Interface Homem-Máquina (HMI) para configuração e monitoramento.
+   - **Algoritmo de Aleatoriedade:** Gera intervalos de irrigação randômicos para testar a resposta hídrica da planta.
+   - **Comunicação Serial:** Protocolo desenvolvido em Python para envio de pacotes binários para o hardware.
 
-### Passo a passo
-```bash
-# Clone este repositório
-$ git clone [https://github.com/seu-usuario/nome-do-projeto.git](https://github.com/seu-usuario/nome-do-projeto.git)
+2. **Camada Física (Execução e Campo):**
+   - **C++/C (Arduino):** Firmware responsável por processar os sinais do cérebro (Python) e acionar os sistemas de bombeamento.
+   - **Manejo de Dados:** O sistema utiliza `Serial.write()` para garantir a integridade e velocidade no recebimento de variáveis do tipo `int` e `char`.
 
-# Acesse a pasta do projeto no terminal
-$ cd nome-do-projeto
+---
 
-# Instale as dependências
-$ npm install
+## 📈 Cronograma de Desenvolvimento
 
-# Execute a aplicação
-$ npm start
+### 🗓️ Semana 1: Arquitetura e Planejamento
+- Divisão de tarefas e responsabilidades.
+- Definição do protocolo de comunicação (Handshake entre Python e C++).
+- Estruturação dos requisitos de hardware.
+
+### 🗓️ Semana 2: Desenvolvimento do Core (Atual)
+- **Simulação de Estresse:** Implementação do dispositivo que lê intervalos aleatórios.
+- **Data Logging:** Agrupamento de dados para análise de performance da muda.
+- **Interface UI:** Criação de containers e grupos de entrada usando QSS externo no PyQt6.
+
+---
+
+## 🚀 Como funciona - 1° periodo de aplicação
+O algoritmo em Python simula a necessidade hídrica e gera uma janela de tempo. Este dado é enviado para o Arduino com o prefixo `'L'`, seguido pelo valor em bytes. O Arduino entra em estado de bloqueio durante a irrigação, garantindo que o ciclo seja completado sem interrupções externas.
+
+---
+
+## ✨ Funcionalidades e Status de Desenvolvimento
+
+- [x] **Comunicação Serial Binária**: Protocolo otimizado em C++/Python usando `Serial.write` para envio de dados sem perda de pacotes.
+- [x] **Interface Modular (HMI)**: UI desenvolvida em PyQt6 com estilização externa via QSS para melhor manutenção.
+- [x] **Gerador de Estresse Hídrico**: Algoritmo Python que calcula e envia intervalos aleatórios de irrigação para o Arduino.
+- [ ] **Data Logging CSV**: Exportação automática dos dados de umidade e tempo de resposta para análise em planilhas.
+- [ ] **Dark Mode Nativo**: Suporte a temas visuais customizados para operação em diferentes ambientes de luminosidade.
+- [x] **Modo de Bloqueio de Segurança**: Lógica no Arduino que impede comandos conflitantes enquanto a irrigação está ativa.
+
+---
+
