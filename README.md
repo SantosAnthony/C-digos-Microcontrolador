@@ -41,7 +41,6 @@ O sistema é dividido em duas camadas principais:
 
 2. **Camada Física (Execução e Campo):**
    - **C++/C (Arduino):** Firmware responsável por processar os sinais do cérebro (Python) e acionar os sistemas de bombeamento.
-   - **Manejo de Dados:** O sistema utiliza `Serial.write()` para garantir a integridade e velocidade no recebimento de variáveis do tipo `int` e `char`.
 
 ---
 
