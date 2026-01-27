@@ -1,7 +1,5 @@
-# Códigos-Microcontrolador
+# 🚀 Códigos-Microcontrolador
 Códigos referentes aos projeto de tratamento do açaí utilizando (IoT)
-
-# 🚀 Nome do Seu Projeto
 
 > Uma frase curta e impactante descrevendo o que seu projeto faz (ex: "A forma mais rápida de gerenciar suas tarefas diárias").
 
@@ -18,24 +16,13 @@ Códigos referentes aos projeto de tratamento do açaí utilizando (IoT)
 
 ## 💻 Sobre o Projeto
 
-[Adicione aqui um GIF ou Screenshot do projeto rodando]
+<img width="600" height="362" alt="image" src="https://github.com/user-attachments/assets/395a0a6f-aa9e-4b29-904a-ac7f5c80516c" />
+
 
 O **Nome do Projeto** nasceu da necessidade de [explicar o problema que você resolve]. Ele foca em [performance/design/facilidade de uso], proporcionando uma experiência fluida para o usuário final.
 
----
 
-## 🛠 Tecnologias Utilizadas
 
-O projeto foi construído com as melhores ferramentas do ecossistema tech:
-
-* **Linguagem:** [Ex: JavaScript / Python / Java]
-* **Framework:** [Ex: React / Django / Spring]
-* **Banco de Dados:** [Ex: PostgreSQL / MongoDB]
-* **Outros:** [Ex: Docker, AWS, TailwindCSS]
-
-> **Dica:** Você pode usar badges do [Shields.io](https://shields.io/) para deixar essa seção visualmente incrível!
-
----
 
 ## ✨ Funcionalidades
 
