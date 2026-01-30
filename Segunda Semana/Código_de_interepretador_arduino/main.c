@@ -8,10 +8,11 @@ const int PinoRele = 7;
 RTC_DS1307 rtc;
 File arquivo;
 
-unsigned long ultimoCheck = 0;
-
 void setup() {
   Serial.begin(9600);
+  while (!Serial) {
+    ;
+  }
   pinMode(PinoRele, OUTPUT);
   digitalWrite(PinoRele, LOW);
 
@@ -57,12 +58,9 @@ void verificarAgenda() {
 
     char* token = strtok(bufferLinha, ";");
     
-
     if (!token) continue; 
 
     if (strcmp(token, dataHoje) == 0) {
-      Serial.print("Agenda de hoje encontrada: ");
-      Serial.println(dataHoje);
       encontrouHoje = true;
 
       for (int i = 1; i <= 4; i++) {
@@ -73,12 +71,6 @@ void verificarAgenda() {
           if (strcmp(horaInicio, horaAgora) == 0) {
             int tempoRega = atoi(duracaoStr);
             if (tempoRega > 0) {
-              Serial.print("HORA DE REGAR! Inicio: ");
-              Serial.print(horaInicio);
-              Serial.print(" por ");
-              Serial.print(tempoRega);
-              Serial.println(" minutos.");
-              
               arquivo.close(); 
               
               executarRega(tempoRega);
