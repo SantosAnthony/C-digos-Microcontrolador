@@ -1,4 +1,3 @@
-import datetime
 import csv
 archiveName = 'Irrigation_Plan.txt'
 filtredArchiveName = 'Data_Archive.txt'
@@ -22,3 +21,4 @@ with open(filtredArchiveName, 'w', newline='') as f:
     writer = csv.writer(f)
     for line in filtredLines:
         writer.writerow(line.split(","))
+
