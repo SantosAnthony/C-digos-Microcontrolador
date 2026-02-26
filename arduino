@@ -1,0 +1,336 @@
+#include <SPI.h>
+#include <RTClib.h>
+#include <SD.h>
+#include <LiquidCrystal_I2C.h>
+
+LiquidCrystal_I2C lcd(0x27,20,3);
+RTC_DS1307 rtc;
+
+enum Estado {OCIOSO, REGANDO, ESPERANDO_SOLENOIDE};
+enum LigadoeDesligado {LIGADO, DESLIGADO}; 
+
+LigadoeDesligado estadoSolenoide = DESLIGADO;
+LigadoeDesligado estadoBomba = DESLIGADO;
+
+Estado estadoAtual = OCIOSO;
+DateTime agora = rtc.now();
+File f;
+
+unsigned long tempoInicio = 0; 
+unsigned long duracaoRega = 0; 
+const unsigned long atrasoSolenoide = 2000;
+
+unsigned long ultimoTempoAgenda = 0;
+const unsigned long intervaloAgenda = 500;
+
+//temporario
+const char linhaCodigo[100] = "24/02/2026,12:30:50,5\n25/02/2026,12:30:50,5\n26/02/2026,12:41:10,5\n";
+//temporario
+
+const int Bomba = 7;
+const int Solenoide = 8;
+char* horaInicio;
+char* duracaoStr;
+
+char* dataP;
+
+bool indicadorDiaTerminado = false;
+char* ponteiroDeSalvas;
+
+char buffer[11];
+char bufferProximoDia[11];
+char bufferProximoDiaHorario[9];
+char bufferProximoDiaDuracao[5];
+char menorData[11];
+char dataHoje[11];
+char horaAgora[9];
+
+String conteudoDaLinha;
+char* dadoCompleto;
+char* dadoCompletoTrabalhado;
+char* dadoCompletoProximoDia;
+int limitadorDoChar;
+
+const int chipSelect = 10;
+
+
+void setup() {
+  Serial.begin(9600);
+  while (!Serial);
+
+  pinMode(Bomba, OUTPUT);
+  digitalWrite(Bomba, LOW);
+
+  pinMode(Solenoide, OUTPUT);
+  digitalWrite(Solenoide, LOW);
+
+  Wire.begin();
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0,0);
+  lcd.print("INICIANDO...");
+
+
+  if (!rtc.begin()) {
+    Serial.println("Erro ao iniciar o rtc");
+    while (1);
+  }
+
+  if (!rtc.isrunning()) {
+    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  }
+  lcd.clear();
+
+  if (!SD.begin(chipSelect)) {
+    Serial.println("Falha no SD!");
+  }
+}
+
+void loop() {
+  gerenciarRega();
+  verificarAgenda();
+}
+
+void atualizarAgenda() {
+  agora = rtc.now();
+
+  sprintf(dataHoje, "%02d/%02d/%04d", agora.day(), agora.month(), agora.year());
+  sprintf(horaAgora, "%02d:%02d:%02d", agora.hour(), agora.minute(), agora.second());
+
+  lcd.setCursor(0, 0);
+  lcd.print(dataHoje);
+  lcd.setCursor(12, 0);
+  lcd.print(horaAgora);
+
+  lcd.setCursor(0,1);
+  lcd.print("-Proxima  irrigacao-");
+  return;
+}
+
+
+void verificarAgenda() {
+  unsigned long tempoAtualAgenda = millis();
+  atualizarAgenda();
+  if (tempoAtualAgenda - ultimoTempoAgenda < intervaloAgenda) {
+    return; 
+  }
+  ultimoTempoAgenda = tempoAtualAgenda;
+
+  atualizarAgenda();
+  lerArquivo();
+
+  if (buffer != NULL && strcmp(buffer, dataHoje) == 0) {
+      proximaIrrigacao();
+      atualizarAgenda();
+      
+      if (strcmp(horaInicio, horaAgora) == 0) {
+        
+        int tempoRega = atoi(duracaoStr);
+        if (tempoRega > 0) {
+          executarRega(tempoRega);
+          return;
+        }
+      } else {
+        
+        char* hora = strtok(horaInicio,":");
+        char* minutos = strtok(NULL,":");
+        char* segundos = strtok(NULL,":");
+      
+        //long b = ((agora.hour()) * 3600L) + ((agora.minute()) * 60L) + (agora.second());
+        //long a = (atoi(strtok(hora)) * 3600L) +  (atoi(minutos) * 60L) + atoi(segundos);
+
+
+        if ((long)(atoi(hora) * 3600L) +  (atoi(minutos) * 60L) + atoi(segundos) - ((agora.hour()) * 3600L) + ((agora.minute()) * 60L) + (agora.second()) == 2) {
+          Serial.println("SOLENOIDE LIBERADO");
+          digitalWrite(Solenoide, HIGH);
+          estadoSolenoide = LIGADO;
+        }
+      }
+  }
+}
+
+void proximaIrrigacao() {
+  atualizarAgenda();
+  if (dadoCompletoTrabalhado != NULL){
+      free(dadoCompletoTrabalhado);
+    }
+
+  limitadorDoChar = conteudoDaLinha.length() + 1;
+  dadoCompletoTrabalhado = (char*) malloc(limitadorDoChar * sizeof(char));
+  
+  strcpy(dadoCompletoTrabalhado, dadoCompleto);
+  dataP = strtok(dadoCompletoTrabalhado,",");
+  
+  do {
+    horaInicio = strtok(NULL, ",");
+    duracaoStr = strtok(NULL, ",");
+  } while (horaInicio != NULL && strcmp(horaInicio, horaAgora) < 0 );
+
+  if (duracaoStr == NULL) {
+    if(estadoAtual == OCIOSO){
+      indicadorDiaTerminado = true;
+      if(bufferProximoDia){
+        lcd.setCursor(0, 2);
+        lcd.print("--/--/----  --:--:--");
+        lcd.setCursor(16,3);
+        lcd.print("----");
+      }else{
+        lcd.setCursor(0, 2);
+        lcd.print(bufferProximoDia);
+        lcd.setCursor(11, 2);
+        lcd.print(bufferProximoDiaHorario);
+        
+      }
+    }
+    return;
+    
+  }else{
+    lcd.setCursor(0, 2);
+    lcd.print(buffer);
+    lcd.setCursor(11, 2);
+    lcd.print(horaInicio);
+  }
+}
+
+/* 
+Exemplo:
+12:30:15 -- 12:30:30
+
+solenoide liga: 12:30:13
+bomba liga: 12:30:15
+
+**intervalo**
+
+bomba desliga: 12:30:30
+solenoide desliga: 12:30:32
+*/
+
+void executarRega(int segundos) {
+  if (estadoAtual != OCIOSO) {
+    return;
+  }
+
+  if (estadoSolenoide == DESLIGADO){
+    Serial.println("SOLENOIDE LIBERADO");
+    digitalWrite(Solenoide, HIGH);
+    estadoSolenoide = LIGADO;
+  }
+
+  Serial.println("BOMBA LIGADA");
+  digitalWrite(Bomba, HIGH);
+  estadoBomba = LIGADO;
+
+
+  tempoInicio = millis();
+  duracaoRega = segundos * 1000UL;
+  estadoAtual = REGANDO;
+
+}
+
+void gerenciarRega(){
+  if (estadoAtual == OCIOSO){
+    lcd.setCursor(0,3);
+    lcd.print("I:False         ");
+    if (duracaoStr == NULL) {
+      lcd.print(bufferProximoDiaDuracao);
+    }
+    else {
+      lcd.print(duracaoStr);
+    }
+    return;  
+  } 
+
+  unsigned long tempoAtual = millis();
+  if (estadoAtual == REGANDO) {
+    lcd.setCursor(0,3);
+    lcd.print("I:True          ");
+    lcd.print(duracaoStr);
+    if (tempoAtual - tempoInicio >= duracaoRega) {
+      digitalWrite(Bomba, LOW);
+      Serial.println("BOMBA DESLIGADA");
+      lcd.setCursor(0,3);
+      lcd.print("I:False             ");
+      tempoInicio = tempoAtual;
+      estadoBomba = DESLIGADO;
+      estadoAtual = ESPERANDO_SOLENOIDE;
+    }
+  }
+  
+  else if (estadoAtual == ESPERANDO_SOLENOIDE) {
+    if (tempoAtual - tempoInicio >= atrasoSolenoide) {
+      if(estadoBomba == DESLIGADO){
+        digitalWrite(Solenoide, LOW);
+        Serial.println("SOLENOIDE FECHADO");
+        estadoSolenoide = DESLIGADO;
+      }
+      estadoAtual = OCIOSO;
+    }
+  }
+}
+
+void lerArquivo(){
+  atualizarAgenda();
+
+  if(strcmp(buffer, dataHoje) == 0){
+    f.close();
+    return;
+  }
+  
+  if (!SD.exists("data.txt")) {
+    f = SD.open("data.txt", FILE_WRITE);
+    if (f) {
+      f.println(linhaCodigo);
+      f.close();
+    }
+  }
+
+  f = SD.open("data.txt");
+  if(f) {
+    while (f.available()) { 
+      conteudoDaLinha = f.readStringUntil('\n');
+      
+      if (conteudoDaLinha.length() > 0) {
+        if (dadoCompleto != NULL){
+          free(dadoCompleto);
+        }
+        limitadorDoChar = conteudoDaLinha.length() + 1;
+        dadoCompleto = (char*) malloc(limitadorDoChar * sizeof(char));
+        conteudoDaLinha.toCharArray(dadoCompleto, limitadorDoChar);
+      }
+      sscanf(dadoCompleto, "%[^,],", buffer);
+
+      if (strcmp(buffer, dataHoje) == 0) {
+        conteudoDaLinha = f.readStringUntil('\n');
+        if (conteudoDaLinha.length() > 0) {
+          if (dadoCompletoProximoDia != NULL) {
+            free(dadoCompletoProximoDia);
+          } 
+          limitadorDoChar = conteudoDaLinha.length() + 1;
+          dadoCompletoProximoDia = (char*) malloc(limitadorDoChar * sizeof(char));
+          conteudoDaLinha.toCharArray(dadoCompletoProximoDia, limitadorDoChar);
+        }
+        sscanf(dadoCompletoProximoDia, "%[^,],%[^,],%[^,]", bufferProximoDia, bufferProximoDiaHorario, bufferProximoDiaDuracao);
+      }
+
+      if (strcmp(buffer, dataHoje) > 0){
+
+        dataP = strtok(dadoCompleto,",");
+
+        horaInicio = strtok(NULL, ",");
+        duracaoStr = strtok(NULL, ",");
+
+        lcd.setCursor(0, 2);
+        lcd.print(buffer);
+        lcd.setCursor(11, 2);
+        lcd.print(horaInicio);
+        lcd.setCursor(0,3);
+        lcd.print(duracaoStr);
+
+        break;
+      }   
+    }
+    f.close();
+  } else {
+    Serial.println("Erro ao abrir data.txt");
+  }
+}
