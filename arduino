@@ -3,7 +3,7 @@
 #include <SD.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C lcd(0x27,20,3);
+LiquidCrystal_I2C lcd(0x27,20,4);
 RTC_DS1307 rtc;
 
 enum Estado {OCIOSO, REGANDO, ESPERANDO_SOLENOIDE};
@@ -16,6 +16,11 @@ Estado estadoAtual = OCIOSO;
 DateTime agora = rtc.now();
 File f;
 
+int base = 20;
+
+
+
+
 unsigned long tempoInicio = 0; 
 unsigned long duracaoRega = 0; 
 const unsigned long atrasoSolenoide = 2000;
@@ -24,7 +29,7 @@ unsigned long ultimoTempoAgenda = 0;
 const unsigned long intervaloAgenda = 500;
 
 //temporario
-const char linhaCodigo[100] = "24/02/2026,12:30:50,5\n25/02/2026,12:30:50,5\n26/02/2026,12:41:10,5\n";
+const char linhaCodigo[] = "27/02/2026,16:28:10,5\n29/02/2026,14:00:80,50\n";
 //temporario
 
 const int Bomba = 7;
@@ -93,8 +98,7 @@ void loop() {
 
 void atualizarAgenda() {
   agora = rtc.now();
-
-  sprintf(dataHoje, "%02d/%02d/%04d", agora.day(), agora.month(), agora.year());
+  sprintf(dataHoje, "%04d/%02d/%02d", agora.year(), agora.month(), agora.day());
   sprintf(horaAgora, "%02d:%02d:%02d", agora.hour(), agora.minute(), agora.second());
 
   lcd.setCursor(0, 0);
@@ -105,6 +109,24 @@ void atualizarAgenda() {
   lcd.setCursor(0,1);
   lcd.print("-Proxima  irrigacao-");
   return;
+}
+
+
+bool verificaFormatoData(const char* texto) {
+  if (strlen(texto) < 10) return false;
+
+  return (
+    isdigit(texto[0]) && 
+    isdigit(texto[1]) && 
+    isdigit(texto[2]) && 
+    isdigit(texto[3]) && 
+    texto[4] == "/"   && 
+    isdigit(texto[5]) && 
+    isdigit(texto[6]) && 
+    texto[7] == "/"   &&
+    isdigit(texto[8]) && 
+    isdigit(texto[9])
+    );
 }
 
 
@@ -135,10 +157,6 @@ void verificarAgenda() {
         char* hora = strtok(horaInicio,":");
         char* minutos = strtok(NULL,":");
         char* segundos = strtok(NULL,":");
-      
-        //long b = ((agora.hour()) * 3600L) + ((agora.minute()) * 60L) + (agora.second());
-        //long a = (atoi(strtok(hora)) * 3600L) +  (atoi(minutos) * 60L) + atoi(segundos);
-
 
         if ((long)(atoi(hora) * 3600L) +  (atoi(minutos) * 60L) + atoi(segundos) - ((agora.hour()) * 3600L) + ((agora.minute()) * 60L) + (agora.second()) == 2) {
           Serial.println("SOLENOIDE LIBERADO");
@@ -169,17 +187,17 @@ void proximaIrrigacao() {
   if (duracaoStr == NULL) {
     if(estadoAtual == OCIOSO){
       indicadorDiaTerminado = true;
-      if(bufferProximoDia){
+      if(!verificaFormatoData(bufferProximoDia)){ 
+        
         lcd.setCursor(0, 2);
-        lcd.print("--/--/----  --:--:--");
+        lcd.print(F("----/--/--  --:--:--"));
         lcd.setCursor(16,3);
-        lcd.print("----");
+        lcd.print(F("----"));
       }else{
         lcd.setCursor(0, 2);
         lcd.print(bufferProximoDia);
-        lcd.setCursor(11, 2);
+        lcd.setCursor(12, 2);
         lcd.print(bufferProximoDiaHorario);
-        
       }
     }
     return;
@@ -187,7 +205,7 @@ void proximaIrrigacao() {
   }else{
     lcd.setCursor(0, 2);
     lcd.print(buffer);
-    lcd.setCursor(11, 2);
+    lcd.setCursor(12, 2);
     lcd.print(horaInicio);
   }
 }
@@ -199,7 +217,7 @@ Exemplo:
 solenoide liga: 12:30:13
 bomba liga: 12:30:15
 
-**intervalo**
+*intervalo*
 
 bomba desliga: 12:30:30
 solenoide desliga: 12:30:32
@@ -228,14 +246,30 @@ void executarRega(int segundos) {
 }
 
 void gerenciarRega(){
+  int subtrairProximo = base - ((String)(bufferProximoDiaDuracao)).length();
+  int subtrairAtual = base - ((String)(duracaoStr)).length();
   if (estadoAtual == OCIOSO){
     lcd.setCursor(0,3);
     lcd.print("I:False         ");
     if (duracaoStr == NULL) {
+      lcd.setCursor(subtrairProximo,3);
       lcd.print(bufferProximoDiaDuracao);
+      int linhaPosicao = 16;
+      lcd.setCursor(linhaPosicao, 3);
+      for(int i = 0; i < (4 - ((String)(bufferProximoDiaDuracao)).length()) ; i++){
+        lcd.print("0");
+        linhaPosicao += 1;
+      }
     }
     else {
+      lcd.setCursor(subtrairAtual,3);
       lcd.print(duracaoStr);
+      int linhaPosicao = 16;
+      lcd.setCursor(linhaPosicao, 3);
+      for(int i = 0; i < (4 - ((String)(bufferProximoDiaDuracao)).length()) ; i++){
+        lcd.print("0");
+        linhaPosicao += 1;
+      }
     }
     return;  
   } 
@@ -270,6 +304,7 @@ void gerenciarRega(){
 
 void lerArquivo(){
   atualizarAgenda();
+  int subtrairAtual = base - ((String)(duracaoStr)).length();
 
   if(strcmp(buffer, dataHoje) == 0){
     f.close();
@@ -310,6 +345,8 @@ void lerArquivo(){
           conteudoDaLinha.toCharArray(dadoCompletoProximoDia, limitadorDoChar);
         }
         sscanf(dadoCompletoProximoDia, "%[^,],%[^,],%[^,]", bufferProximoDia, bufferProximoDiaHorario, bufferProximoDiaDuracao);
+        
+        break; 
       }
 
       if (strcmp(buffer, dataHoje) > 0){
@@ -321,9 +358,9 @@ void lerArquivo(){
 
         lcd.setCursor(0, 2);
         lcd.print(buffer);
-        lcd.setCursor(11, 2);
+        lcd.setCursor(12, 2);
         lcd.print(horaInicio);
-        lcd.setCursor(0,3);
+        lcd.setCursor(subtrairAtual,3);
         lcd.print(duracaoStr);
 
         break;
@@ -334,3 +371,6 @@ void lerArquivo(){
     Serial.println("Erro ao abrir data.txt");
   }
 }
+
+
+
