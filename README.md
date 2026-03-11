@@ -68,3 +68,5 @@ O sistema é dividido em duas camadas principais:
 
 ---
 
+<img width="1020" height="791" alt="image" src="https://github.com/user-attachments/assets/2f12f43b-61e3-4b3f-a9d4-2d1e46afec53" />
+
