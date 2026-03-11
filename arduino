@@ -3,23 +3,64 @@
 #include <SD.h>
 #include <LiquidCrystal_I2C.h>
 
-LiquidCrystal_I2C lcd(0x27,20,4);
+LiquidCrystal_I2C lcd(0x27, 20, 4);
 RTC_DS1307 rtc;
 
 enum Estado {OCIOSO, REGANDO, ESPERANDO_SOLENOIDE};
 enum LigadoeDesligado {LIGADO, DESLIGADO}; 
 
+Estado estadoAtual = OCIOSO;
 LigadoeDesligado estadoSolenoide = DESLIGADO;
 LigadoeDesligado estadoBomba = DESLIGADO;
 
-Estado estadoAtual = OCIOSO;
 DateTime agora;
 File f;
 
+class Botao {
+  private:
+    uint8_t pino;
+    uint32_t tempoDebounce;
+    uint32_t ultimoTempo;
+    int estadoAnterior;
+    int estadoValidado;
+
+  public:
+    Botao(uint8_t pinoEscolhido, uint32_t tempoFiltro = 20) {
+      pino = pinoEscolhido;
+      tempoDebounce = tempoFiltro;
+      ultimoTempo = 0;
+      estadoAnterior = HIGH;
+      estadoValidado = HIGH;
+    }
+
+    bool foiClicado() {
+      bool ocorreuClique = false;
+      int leitura = digitalRead(pino);
+
+      if (leitura != estadoAnterior) {
+        ultimoTempo = millis();
+      }
+
+      if ((millis() - ultimoTempo) > tempoDebounce) {
+        if (leitura != estadoValidado) {
+          estadoValidado = leitura;
+          
+          if (estadoValidado == LOW) {
+            ocorreuClique = true; 
+          }
+        }
+      }
+      estadoAnterior = leitura;
+      return ocorreuClique;
+    }
+};
+
+Botao botaoTravar(16);
+Botao botaoMenu(17);
+Botao botaoCima(32);
+Botao botaoBaixo(27);
+
 int base = 20;
-
-
-
 
 unsigned long tempoInicio = 0; 
 unsigned long duracaoRega = 0; 
@@ -28,39 +69,50 @@ const unsigned long atrasoSolenoide = 2000;
 unsigned long ultimoTempoAgenda = 0;
 const unsigned long intervaloAgenda = 500;
 
-//temporario
-const char linhaCodigo[] = "27/02/2026,16:28:10,5\n29/02/2026,14:00:80,50\n";
-//temporario
+unsigned long tempoAnteriorAtualizarAgenda = 0;
+const unsigned long intervaloAtualizarAgenda = 500;
 
-const int Bomba = 7;
-const int Solenoide = 8;
-char* horaInicio;
-char* duracaoStr;
+const char linhaCodigo[] = "2026/03/04,13:47:50,0005,13:50:50,0005,18:47:50,0005\n"
+                           "2026/03/06,17:14:50,0005\n"
+                           "2026/03/08,21:30:00,1501,22:00:00,1601\n"
+                           "2026/03/11,16:36:20,0010,22:21:50,0010,23:36:20,0010\n";
 
-char* dataP;
+const int Bomba = 26;
+const int Solenoide = 25;
+const int chipSelect = 5;
+
+char horaInicio[9] = "";
+char duracaoStr[20] = "";
+char dataP[11];
 
 bool indicadorDiaTerminado = false;
-char* ponteiroDeSalvas;
+bool estadoBotao = false;
+bool menuAtivo = false;
 
-char buffer[11];
-char bufferProximoDia[11];
-char bufferProximoDiaHorario[9];
-char bufferProximoDiaDuracao[5];
-char menorData[11];
-char dataHoje[11];
+char buffer[11] = "";
+char dataHoje[11] = "";
 char horaAgora[9];
 
-String conteudoDaLinha;
-char* dadoCompleto;
-char* dadoCompletoTrabalhado;
-char* dadoCompletoProximoDia;
+std::string conteudoDaLinha;
 int limitadorDoChar;
+int menuSelecionado;
+unsigned int duracaoRegaForcado;
+unsigned int horaRegaForcado;
+bool duracaoJaSelecionada = false;
+bool regaForcadaAtiva = false;  
+uint32_t ultimoTempoRegaForcada = 0;
 
-const int chipSelect = 10;
+// Para formatarLcd()
+char ultimaData[11] = "";
+char ultimoBuffer[11] = "";
+char ultimaHora[9] = "";
+char ultimaDuracao[20] = "";
+bool ultimoMenuAtivo = false;
 
+char resposta[9];
 
 void setup() {
-  Serial.begin(9600);
+  Serial.begin(115200); 
   while (!Serial);
 
   pinMode(Bomba, OUTPUT);
@@ -69,12 +121,20 @@ void setup() {
   pinMode(Solenoide, OUTPUT);
   digitalWrite(Solenoide, HIGH);
 
+  pinMode(33, OUTPUT);
+  digitalWrite(33, LOW);
+
+  pinMode(16, INPUT_PULLUP);
+  pinMode(17, INPUT_PULLUP);
+  pinMode(32, INPUT_PULLUP); // botao ^
+  pinMode(27, INPUT_PULLUP); // botao v
+
+
   Wire.begin();
   lcd.init();
   lcd.backlight();
   lcd.setCursor(0,0);
-  lcd.print("INICIANDO...");
-
+  lcd.print("INICIANDO..."); 
 
   if (!rtc.begin()) {
     Serial.println("Erro ao iniciar o rtc");
@@ -82,154 +142,188 @@ void setup() {
   }
 
   if (!rtc.isrunning()) {
-    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+    rtc.adjust(DateTime(__DATE__, __TIME__));
   }
-  lcd.clear();
 
   if (!SD.begin(chipSelect)) {
     Serial.println("Falha no SD!");
   }
 
+  lcd.clear();
   agora = rtc.now();
 }
 
 void loop() {
+  atualizarAgenda();
   gerenciarRega();
   verificarAgenda();
+  verificarRegaForcada();
 }
 
 void atualizarAgenda() {
+  unsigned long tempoAtualAtualizarAgenda = millis();
+  
+  if (tempoAtualAtualizarAgenda - tempoAnteriorAtualizarAgenda < intervaloAtualizarAgenda) {
+    return;
+  }
+  tempoAnteriorAtualizarAgenda = tempoAtualAtualizarAgenda;
+
   agora = rtc.now();
   sprintf(dataHoje, "%04d/%02d/%02d", agora.year(), agora.month(), agora.day());
   sprintf(horaAgora, "%02d:%02d:%02d", agora.hour(), agora.minute(), agora.second());
 
+  if (menuAtivo) return;
   lcd.setCursor(0, 0);
   lcd.print(dataHoje);
   lcd.setCursor(12, 0);
   lcd.print(horaAgora);
+}
 
-  lcd.setCursor(0,1);
-  lcd.print("-Proxima  irrigacao-");
+void conversorDeHorario(){
+  int horas, minutos, segundos;
+  int horaIrrigacao, minutoIrrigacao, segundoIrrigacao;
+
+  
+  int valorDuracaoStr = atoi(duracaoStr);
+  int tamanhoDuracaoStr = strlen(duracaoStr);
+
+  sscanf(horaInicio,"%d:%d:%d", &horaIrrigacao, &minutoIrrigacao, &segundoIrrigacao);
+
+  int totalSegundos = (valorDuracaoStr) + (horaIrrigacao * 3600L + minutoIrrigacao * 60 + segundoIrrigacao);
+
+  minutos = (totalSegundos % 3600) / 60;
+  segundos = totalSegundos % 60;
+  horas = (totalSegundos / 3600) % 24;
+
+  sprintf(resposta, "%02d:%02d:%02d", horas, minutos, segundos);
+
+  Serial.println(resposta);
   return;
 }
 
+void formatarLcd() {
+  if (menuAtivo) return;
 
-bool verificaFormatoData(const char* texto) {
-  if (strlen(texto) < 10) return false;
+  int cmpData = strcmp(buffer, dataHoje);
 
-  return (
-    isdigit(texto[0]) && 
-    isdigit(texto[1]) && 
-    isdigit(texto[2]) && 
-    isdigit(texto[3]) && 
-    texto[4] == '/'   && 
-    isdigit(texto[5]) && 
-    isdigit(texto[6]) && 
-    texto[7] == '/'   &&
-    isdigit(texto[8]) && 
-    isdigit(texto[9])
-    );
+  lcd.setCursor(0,1);
+  lcd.print("-Proxima  irrigacao-");
 
-    /*  return (
-        isdigit(texto[0]) && isdigit(texto[1]) && texto[2] == '/' &&
-        isdigit(texto[3]) && isdigit(texto[4]) && texto[5] == '/' &&
-        isdigit(texto[6]) && isdigit(texto[7]) && isdigit(texto[8]) && isdigit(texto[9]));*/
+  if (strcmp(ultimaData, dataHoje) == 0 &&
+      strcmp(ultimoBuffer, buffer) == 0 &&
+      strcmp(ultimaHora, horaInicio) == 0 &&
+      strcmp(ultimaDuracao, duracaoStr) == 0 &&
+      ultimoMenuAtivo == menuAtivo) 
+      {
+      return;
+  } else {
+    strcpy(ultimaData, dataHoje);
+    strcpy(ultimoBuffer, buffer);
+    strcpy(ultimaHora, horaInicio);
+    strcpy(ultimaDuracao, duracaoStr);
+    ultimoMenuAtivo = menuAtivo;
+  }
 
+  if (cmpData < 0 || (cmpData == 0 && estadoAtual == OCIOSO && strcmp(horaInicio, horaAgora) < 0)) {
+    lcd.setCursor(0, 2);
+    lcd.print("----/--/--");
+    lcd.setCursor(12, 2);
+    lcd.print("--:--:--");
+    lcd.setCursor(0, 3);
+    lcd.print("Em espera   --:--:--");
+  } 
+  else if (cmpData >= 0 && estadoAtual == OCIOSO) {
+    lcd.setCursor(0, 2);
+    lcd.print(buffer);
+    lcd.setCursor(12, 2);
+    lcd.print(horaInicio);
+    lcd.setCursor(0, 3);
+    lcd.print("Em espera   ");
+    conversorDeHorario();
+    lcd.print(resposta);
+  } 
+  else if (cmpData == 0 && estadoAtual == REGANDO) {
+    lcd.setCursor(0, 3);
+    lcd.print("Regando         ");
+  }
 }
-
 
 void verificarAgenda() {
   unsigned long tempoAtualAgenda = millis();
-  atualizarAgenda();
   if (tempoAtualAgenda - ultimoTempoAgenda < intervaloAgenda) {
     return; 
   }
   ultimoTempoAgenda = tempoAtualAgenda;
 
-  atualizarAgenda();
   lerArquivo();
+  proximaIrrigacao();
 
-  if (buffer != NULL && strcmp(buffer, dataHoje) == 0) {
-      proximaIrrigacao();
-      atualizarAgenda();
+  if (buffer[0] != '\0' && strcmp(buffer, dataHoje) == 0) {
       
-      if (strcmp(horaInicio, horaAgora) == 0) {
-        
+      if (horaInicio[0] != '\0' && strcmp(horaInicio, horaAgora) == 0) {
         int tempoRega = atoi(duracaoStr);
+        Serial.println(tempoRega);
         if (tempoRega > 0) {
           executarRega(tempoRega);
           return;
         }
-      } else {
+      } else if (horaInicio[0] != '\0') {
+        char horaCopia[9];
+        strcpy(horaCopia, horaInicio);
         
-        char* hora = strtok(horaInicio,":");
+        char* hora = strtok(horaCopia,":");
         char* minutos = strtok(NULL,":");
         char* segundos = strtok(NULL,":");
 
-        if ((long)(atoi(hora) * 3600L) +  (atoi(minutos) * 60L) + atoi(segundos) - ((agora.hour()) * 3600L) + ((agora.minute()) * 60L) + (agora.second()) == 2) {
-          Serial.println("SOLENOIDE LIBERADO");
-          digitalWrite(Solenoide, HIGH);
-          estadoSolenoide = LIGADO;
+        if (hora && minutos && segundos) {
+          if ((long)(atoi(hora) * 3600L) + (long)(atoi(minutos) * 60L) + (atoi(segundos)) - ((agora.hour()) * 3600L) - ((agora.minute()) * 60L) - (agora.second()) <= 2) {
+            Serial.println("SOLENOIDE LIBERADO");
+            digitalWrite(Solenoide, HIGH); 
+            estadoSolenoide = LIGADO;
+          }
         }
       }
   }
 }
 
 void proximaIrrigacao() {
-  atualizarAgenda();
-  if (dadoCompletoTrabalhado != NULL){
-      free(dadoCompletoTrabalhado);
-    }
-
-  limitadorDoChar = conteudoDaLinha.length() + 1;
-  dadoCompletoTrabalhado = (char*) malloc(limitadorDoChar * sizeof(char));
+  if (strcmp(buffer, dataHoje) < 0){
+      return;
+  }
   
-  strcpy(dadoCompletoTrabalhado, dadoCompleto);
-  dataP = strtok(dadoCompletoTrabalhado,",");
-  
+  size_t posicao = conteudoDaLinha.find(',');
+  posicao++;
+  size_t posVirgulaDuracao;
   do {
-    horaInicio = strtok(NULL, ",");
-    duracaoStr = strtok(NULL, ",");
-  } while (horaInicio != NULL && strcmp(horaInicio, horaAgora) < 0 );
+    size_t posVirgulaHora = conteudoDaLinha.find(',', posicao);
+    size_t tamanhoHora = posVirgulaHora - posicao; // Talvez retiravel?
+    strncpy(horaInicio, conteudoDaLinha.c_str() + posicao, tamanhoHora);
+    horaInicio[tamanhoHora] = '\0'; // Talvez retiravel?
 
-  if (duracaoStr == NULL) {
-    if(estadoAtual == OCIOSO){
-      indicadorDiaTerminado = true;
-      if(!verificaFormatoData(bufferProximoDia)){ 
-        
-        lcd.setCursor(0, 2);
-        lcd.print(F("----/--/--  --:--:--"));
-        lcd.setCursor(16,3);
-        lcd.print(F("----"));
-      }else{
-        lcd.setCursor(0, 2);
-        lcd.print(bufferProximoDia);
-        lcd.setCursor(12, 2);
-        lcd.print(bufferProximoDiaHorario);
-      }
+    posicao = posVirgulaHora + 1;
+    posVirgulaDuracao = conteudoDaLinha.find(',', posicao);
+    size_t tamanhoDuracao = 4;
+    strncpy(duracaoStr, conteudoDaLinha.c_str() + posicao, tamanhoDuracao);
+    duracaoStr[tamanhoDuracao] = '\0'; // Terminador nulo
+
+    if (posVirgulaDuracao != std::string::npos) {
+        posicao = posVirgulaDuracao + 1;
     }
-    return;
     
-  }else{
-    lcd.setCursor(0, 2);
-    lcd.print(buffer);
-    lcd.setCursor(12, 2);
-    lcd.print(horaInicio);
+    if (strcmp(buffer, dataHoje) > 0){
+      break;
+  }
+
+  } while (posVirgulaDuracao != std::string::npos && strcmp(horaInicio, horaAgora) < 0 );
+
+
+  // SE PA ESSE HORAINICI'O NUNCA VAI SER NULL, mas fazer oq
+  if (horaInicio[0] == '\0' || strcmp(horaInicio, horaAgora) < 0) {
+    if (estadoAtual == OCIOSO) {
+      indicadorDiaTerminado = true;
+    }
   }
 }
-
-/* 
-Exemplo:
-12:30:15 -- 12:30:30
-
-solenoide liga: 12:30:13
-bomba liga: 12:30:15
-
-*intervalo*
-
-bomba desliga: 12:30:30
-solenoide desliga: 12:30:32
-*/
 
 void executarRega(int segundos) {
   if (estadoAtual != OCIOSO) {
@@ -246,58 +340,34 @@ void executarRega(int segundos) {
   digitalWrite(Bomba, HIGH);
   estadoBomba = LIGADO;
 
-
   tempoInicio = millis();
   duracaoRega = segundos * 1000UL;
   estadoAtual = REGANDO;
-
 }
 
 void gerenciarRega(){
-  int subtrairProximo = base - ((String)(bufferProximoDiaDuracao)).length();
-  int subtrairAtual = base - ((String)(duracaoStr)).length();
-  if (estadoAtual == OCIOSO){
-    lcd.setCursor(0,3);
-    lcd.print("I:False         ");
-    if (duracaoStr == NULL) {
-      lcd.setCursor(subtrairProximo,3);
-      lcd.print(bufferProximoDiaDuracao);
-      int linhaPosicao = 16;
-      lcd.setCursor(linhaPosicao, 3);
-      for(int i = 0; i < (4 - ((String)(bufferProximoDiaDuracao)).length()) ; i++){
-        lcd.print("0");
-        linhaPosicao += 1;
-      }
-    }
-    else {
-      lcd.setCursor(subtrairAtual,3);
-      lcd.print(duracaoStr);
-      int linhaPosicao = 16;
-      lcd.setCursor(linhaPosicao, 3);
-      for(int i = 0; i < (4 - ((String)(bufferProximoDiaDuracao)).length()) ; i++){
-        lcd.print("0");
-        linhaPosicao += 1;
-      }
-    }
-    return;  
-  } 
+  switchBotao();
+  formatarLcd();
 
+  if (menuAtivo == true) return;
+
+  if (estadoBotao == 1) {
+    lcd.setCursor(0,3);
+    lcd.print("REGA DIA OFF");
+    return;
+  }
+  
   unsigned long tempoAtual = millis();
   if (estadoAtual == REGANDO) {
-    lcd.setCursor(0,3);
-    lcd.print("I:True          ");
-    lcd.print(duracaoStr);
     if (tempoAtual - tempoInicio >= duracaoRega) {
       digitalWrite(Bomba, LOW);
       Serial.println("BOMBA DESLIGADA");
-      lcd.setCursor(0,3);
-      lcd.print("I:False             ");
+  
       tempoInicio = tempoAtual;
       estadoBomba = DESLIGADO;
       estadoAtual = ESPERANDO_SOLENOIDE;
     }
   }
-  
   else if (estadoAtual == ESPERANDO_SOLENOIDE) {
     if (tempoAtual - tempoInicio >= atrasoSolenoide) {
       if(estadoBomba == DESLIGADO){
@@ -311,74 +381,263 @@ void gerenciarRega(){
 }
 
 void lerArquivo(){
-  atualizarAgenda();
-  int subtrairAtual = base - ((String)(duracaoStr)).length();
+  if (menuAtivo == true) return;
 
-  if(strcmp(buffer, dataHoje) == 0){
-    f.close();
+  if((strcmp(buffer, dataHoje) > 0) || (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false)){
     return;
   }
-  
-  if (!SD.exists("data.txt")) {
-    f = SD.open("data.txt", FILE_WRITE);
+
+  if (!SD.exists("/data.txt")) {
+    f = SD.open("/data.txt", FILE_WRITE);
     if (f) {
-      f.println(linhaCodigo);
+      f.print(linhaCodigo);
       f.close();
+    } else {
+      Serial.println("Erro ao criar data.txt");
     }
   }
 
-  f = SD.open("data.txt");
+  f = SD.open("/data.txt");
   if(f) {
+    digitalWrite(33, HIGH);
     while (f.available()) { 
-      conteudoDaLinha = f.readStringUntil('\n');
+      conteudoDaLinha = f.readStringUntil('\n').c_str();
       
+      String primeiroDado;
       if (conteudoDaLinha.length() > 0) {
-        if (dadoCompleto != NULL){
-          free(dadoCompleto);
-        }
-        limitadorDoChar = conteudoDaLinha.length() + 1;
-        dadoCompleto = (char*) malloc(limitadorDoChar * sizeof(char));
-        conteudoDaLinha.toCharArray(dadoCompleto, limitadorDoChar);
+        int indiceVirgula = conteudoDaLinha.find(',');
+        primeiroDado = conteudoDaLinha.substr(0, indiceVirgula).c_str();
       }
-      sscanf(dadoCompleto, "%[^,],", buffer);
 
-      if (strcmp(buffer, dataHoje) == 0) {
-        conteudoDaLinha = f.readStringUntil('\n');
-        if (conteudoDaLinha.length() > 0) {
-          if (dadoCompletoProximoDia != NULL) {
-            free(dadoCompletoProximoDia);
-          } 
-          limitadorDoChar = conteudoDaLinha.length() + 1;
-          dadoCompletoProximoDia = (char*) malloc(limitadorDoChar * sizeof(char));
-          conteudoDaLinha.toCharArray(dadoCompletoProximoDia, limitadorDoChar);
+      strncpy(buffer, primeiroDado.c_str(), sizeof(buffer) - 1);
+      buffer[sizeof(buffer) - 1] = '\0';
+      
+      if (indicadorDiaTerminado == true) {
+          indicadorDiaTerminado = false;
+          continue;
         }
-        sscanf(dadoCompletoProximoDia, "%[^,],%[^,],%[^,]", bufferProximoDia, bufferProximoDiaHorario, bufferProximoDiaDuracao);
-        
-        break; 
-      }
+      if (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false) {
+        break;
+      } 
 
       if (strcmp(buffer, dataHoje) > 0){
-
-        dataP = strtok(dadoCompleto,",");
-
-        horaInicio = strtok(NULL, ",");
-        duracaoStr = strtok(NULL, ",");
-
-        lcd.setCursor(0, 2);
-        lcd.print(buffer);
-        lcd.setCursor(12, 2);
-        lcd.print(horaInicio);
-        lcd.setCursor(subtrairAtual,3);
-        lcd.print(duracaoStr);
-
-        break;
-      }   
+        break; 
+      }
     }
+    digitalWrite(33, LOW);
     f.close();
   } else {
     Serial.println("Erro ao abrir data.txt");
   }
 }
 
+void switchBotao(){
+  gerenciarMenu();
+  if (botaoTravar.foiClicado()) {
+    estadoBotao = !estadoBotao;
+  }
 
+  if (botaoMenu.foiClicado() && menuAtivo == false) {
+    Serial.println("Entrando no menu");
+    menu();
+  }
 
+  if (botaoCima.foiClicado()) {
+    Serial.println("botaoCima clicado");
+      if (menuSelecionado != 0) {
+      menuSelecionado--;
+      }
+    
+  }
+  if (botaoBaixo.foiClicado()) {
+    Serial.println("botaoBaixo clicado");
+    if (menuSelecionado != 3) {
+    menuSelecionado++;
+    }
+  }
+  return;
+}
+
+void menu(){
+  menuAtivo = true;
+  menuSelecionado = 0;
+  duracaoRegaForcado = 30; // Tempo padrão -> 30m
+  horaRegaForcado = 1; // Tempo padrão -> 1h
+  duracaoJaSelecionada = false;
+
+  lcd.clear();
+  lcd.setCursor(7,0);
+  lcd.print("Voltar");
+  lcd.setCursor(2,1);
+  lcd.print("^");
+  lcd.setCursor(1,2);
+  lcd.print("30m de irrigacao");
+  lcd.setCursor(2,3);
+  lcd.print("v");
+  return;
+}
+
+void gerenciarMenu(){
+  if (!menuAtivo) return;
+  switch(menuSelecionado){
+    case 0:
+      lcd.setCursor(0,0);
+      lcd.print(">");
+      lcd.setCursor(0,1);
+      lcd.print(" ");
+      lcd.setCursor(0,2);
+      lcd.print(" ");
+      lcd.setCursor(0,3);
+      lcd.print(" ");
+      break;
+    case 1:
+      lcd.setCursor(0,0);
+      lcd.print(" ");
+      lcd.setCursor(0,1);
+      lcd.print(">");
+      lcd.setCursor(0,2);
+      lcd.print(" ");
+      lcd.setCursor(0,3);
+      lcd.print(" ");
+      break;
+    case 2:
+      lcd.setCursor(0,0);
+      lcd.print(" ");
+      lcd.setCursor(0,1);
+      lcd.print(" ");
+      lcd.setCursor(0,2);
+      lcd.print(">");
+      lcd.setCursor(0,3);
+      lcd.print(" ");
+      break;
+    case 3:
+      lcd.setCursor(0,0);
+      lcd.print(" ");
+      lcd.setCursor(0,1);
+      lcd.print(" ");
+      lcd.setCursor(0,2);
+      lcd.print(" ");
+      lcd.setCursor(0,3);
+      lcd.print(">");
+      break;
+    default:
+      menuSelecionado = 0;
+      break;
+  }
+
+  if (botaoMenu.foiClicado()){
+    if (menuSelecionado == 0 && duracaoJaSelecionada == false) {
+      lcd.clear();
+      menuAtivo = false;
+      strcpy(ultimaData, "2000/01/01");
+      return;
+    }
+
+    if (menuSelecionado == 0 && duracaoJaSelecionada == true) {
+      lcd.clear();
+      lcd.setCursor(7,0);
+      lcd.print("Voltar");
+      lcd.setCursor(2,1);
+      lcd.print("^");
+      lcd.setCursor(2,3);
+      lcd.print("v");
+      lcd.setCursor(13,1);
+      lcd.print(" ");
+      lcd.setCursor(13,3);
+      lcd.print(" ");
+      lcd.setCursor(1,2);
+      lcd.print(duracaoRegaForcado);
+      lcd.print("m de irrigacao");
+      duracaoJaSelecionada = false;
+    }
+
+    else if (menuSelecionado == 1 && duracaoJaSelecionada == false){
+      duracaoRegaForcado += 30;
+      lcd.setCursor(1,2);
+      lcd.print(duracaoRegaForcado);
+      lcd.print("m de irrigacao   ");
+    }
+    else if (menuSelecionado == 3 && duracaoJaSelecionada == false && duracaoRegaForcado > 30){
+      duracaoRegaForcado += -30;
+      lcd.setCursor(1,2);
+      lcd.print(duracaoRegaForcado);
+      lcd.print("m de irrigacao   ");
+    }
+    
+    else if (menuSelecionado == 2 && duracaoJaSelecionada == false) {
+      duracaoJaSelecionada = true;
+      lcd.setCursor(2,1);
+      lcd.print(" ");
+      lcd.setCursor(2,3);
+      lcd.print(" ");
+      lcd.setCursor(13,1);
+      lcd.print("^");
+      lcd.setCursor(13,3);
+      lcd.print("v");
+      lcd.setCursor(1,2);
+      lcd.print("                   ");
+      lcd.setCursor(6,2);
+      lcd.print("a cada ");
+      lcd.print(horaRegaForcado);
+      lcd.print("h");
+    }
+
+    else if (menuSelecionado == 1 && duracaoJaSelecionada == true){
+      horaRegaForcado += 1;
+      lcd.setCursor(6,2);
+      lcd.print("a cada ");
+      lcd.print(horaRegaForcado);
+      lcd.print("h   ");
+    }
+    else if (menuSelecionado == 3 && duracaoJaSelecionada == true && horaRegaForcado > 0){
+      horaRegaForcado += -1;
+      lcd.setCursor(6,2);
+      lcd.print("a cada ");
+      lcd.print(horaRegaForcado);
+      lcd.print("h  ");
+    }
+    else if (menuSelecionado == 2 && duracaoJaSelecionada == true) {
+      executarIrrigacaoForcada();
+    }
+  }
+  return;
+}
+
+void executarIrrigacaoForcada() {
+  lcd.clear();
+  Serial.println("SOLENOIDE LIBERADO");
+  digitalWrite(Solenoide, HIGH); 
+  estadoSolenoide = LIGADO;
+  delay(atrasoSolenoide);
+
+  int duracaoEmSegundos = duracaoRegaForcado * 60;
+  executarRega(duracaoEmSegundos);
+
+  agora = rtc.now();
+  if (horaRegaForcado != 0) {
+
+  regaForcadaAtiva = true;
+  ultimoTempoRegaForcada = agora.unixtime();
+
+  Serial.print("Irrigacao forcada iniciada! Duracao: ");
+  Serial.print(duracaoRegaForcado);
+  Serial.print(" min | Repeticao a cada: ");
+  Serial.print(horaRegaForcado);
+  Serial.println(" h");
+  }
+}
+
+void verificarRegaForcada() {
+  if (!regaForcadaAtiva) {
+    return; 
+  }
+
+  agora = rtc.now();
+  uint32_t tempoAtual = agora.unixtime();
+  uint32_t intervaloEmSegundos = horaRegaForcado * 3600UL;
+
+  if ((tempoAtual - ultimoTempoRegaForcada) >= intervaloEmSegundos) {
+    ultimoTempoRegaForcada = tempoAtual;
+    executarIrrigacaoForcada();
+  }
+}
