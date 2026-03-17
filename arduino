@@ -6,14 +6,18 @@
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 RTC_DS1307 rtc;
 
-enum Estado {OCIOSO, REGANDO, ESPERANDO_SOLENOIDE};
+enum Estado {OCIOSO, ABRINDO_SOLENOIDE, REGANDO, ESPERANDO_SOLENOIDE};
 enum LigadoeDesligado {LIGADO, DESLIGADO}; 
+enum Interface {PROGRAMADA, MENU, IRRIGACAO_FORCADA};
 
+Interface interfaceAtual = PROGRAMADA;
+Interface ultimaInterfaceAtual = PROGRAMADA;
 Estado estadoAtual = OCIOSO;
 LigadoeDesligado estadoSolenoide = DESLIGADO;
 LigadoeDesligado estadoBomba = DESLIGADO;
 
 DateTime agora;
+DateTime inicioDaRega;
 File f;
 
 class Botao {
@@ -55,61 +59,42 @@ class Botao {
     }
 };
 
-Botao botaoTravar(16);
-Botao botaoMenu(17);
+Botao botaoTravar(14);
+Botao botaoMenu(13);
 Botao botaoCima(32);
 Botao botaoBaixo(27);
+Botao botaoLerSd(12);
 
-int base = 20;
 
-unsigned long tempoInicio = 0; 
-unsigned long duracaoRega = 0; 
-const unsigned long atrasoSolenoide = 2000;
-
-unsigned long ultimoTempoAgenda = 0;
-const unsigned long intervaloAgenda = 500;
-
-unsigned long tempoAnteriorAtualizarAgenda = 0;
-const unsigned long intervaloAtualizarAgenda = 500;
+unsigned long tempoInicio = 0, duracaoRega = 0, ultimoTempoAgenda = 0, ultimoTempoFormatar = 0,tempoAnteriorAtualizarAgenda = 0; 
+const unsigned long atrasoSolenoide = 2000 , intervaloAgenda = 500, intervaloAtualizarAgenda = 500;
 
 const char linhaCodigo[] = "2026/03/04,13:47:50,0005,13:50:50,0005,18:47:50,0005\n"
                            "2026/03/06,17:14:50,0005\n"
                            "2026/03/08,21:30:00,1501,22:00:00,1601\n"
-                           "2026/03/11,16:36:20,0010,22:21:50,0010,23:36:20,0010\n";
+                           "2026/03/12,13:42:20,0010,13:23:40,0010,23:36:20,0010\n"
+                           "2026/03/16,13:42:20,0010,21:54:05,0010,23:36:20,0010\n";
 
-const int Bomba = 26;
-const int Solenoide = 25;
-const int chipSelect = 5;
+const int Bomba = 26, Solenoide = 25, chipSelect = 5;
+char horaInicio[9] = "", duracaoStr[20] = "", dataP[11], buffer[11] = "", dataHoje[11] = "", bufferParado[11] = "", ultimoBufferParado[11] = "", ultimaData[11] = "", ultimoBuffer[11] = "", ultimaHora[9] = "", ultimaDuracao[20] = "";
+char horaAgora[9], resposta[9];
 
-char horaInicio[9] = "";
-char duracaoStr[20] = "";
-char dataP[11];
+bool indicadorDiaTerminado = false, estadoBotao = false, ultimoEstadoBotao = false, estadoDeLeitura = false, duracaoJaSelecionada = false, regaForcadaAtiva = false;
 
-bool indicadorDiaTerminado = false;
-bool estadoBotao = false;
-bool menuAtivo = false;
-
-char buffer[11] = "";
-char dataHoje[11] = "";
-char horaAgora[9];
+int base = 20;
+int limitadorDoChar, menuSelecionado;
+int duracaoEmSegundos;
 
 std::string conteudoDaLinha;
-int limitadorDoChar;
-int menuSelecionado;
-unsigned int duracaoRegaForcado;
-unsigned int horaRegaForcado;
-bool duracaoJaSelecionada = false;
-bool regaForcadaAtiva = false;  
+unsigned int duracaoRegaForcado; 
+unsigned int horaRegaForcado = 0;
+
 uint32_t ultimoTempoRegaForcada = 0;
+uint32_t intervaloEmSegundos = 0;
 
-// Para formatarLcd()
-char ultimaData[11] = "";
-char ultimoBuffer[11] = "";
-char ultimaHora[9] = "";
-char ultimaDuracao[20] = "";
-bool ultimoMenuAtivo = false;
-
-char resposta[9];
+bool voltarParaProgramada = 0;
+unsigned long tempoAnteriorVoltarProgramada;
+unsigned long tempoVoltarProgramada;
 
 void setup() {
   Serial.begin(115200); 
@@ -124,10 +109,11 @@ void setup() {
   pinMode(33, OUTPUT);
   digitalWrite(33, LOW);
 
-  pinMode(16, INPUT_PULLUP);
-  pinMode(17, INPUT_PULLUP);
+  pinMode(14, INPUT_PULLUP);
+  pinMode(13, INPUT_PULLUP);
   pinMode(32, INPUT_PULLUP); // botao ^
   pinMode(27, INPUT_PULLUP); // botao v
+  pinMode(12, INPUT_PULLUP);
 
 
   Wire.begin();
@@ -154,10 +140,10 @@ void setup() {
 }
 
 void loop() {
+  formatarLcd();
   atualizarAgenda();
   gerenciarRega();
   verificarAgenda();
-  verificarRegaForcada();
 }
 
 void atualizarAgenda() {
@@ -172,7 +158,7 @@ void atualizarAgenda() {
   sprintf(dataHoje, "%04d/%02d/%02d", agora.year(), agora.month(), agora.day());
   sprintf(horaAgora, "%02d:%02d:%02d", agora.hour(), agora.minute(), agora.second());
 
-  if (menuAtivo) return;
+  if (interfaceAtual == MENU || voltarParaProgramada) return;
   lcd.setCursor(0, 0);
   lcd.print(dataHoje);
   lcd.setCursor(12, 0);
@@ -182,10 +168,8 @@ void atualizarAgenda() {
 void conversorDeHorario(){
   int horas, minutos, segundos;
   int horaIrrigacao, minutoIrrigacao, segundoIrrigacao;
-
   
-  int valorDuracaoStr = atoi(duracaoStr);
-  int tamanhoDuracaoStr = strlen(duracaoStr);
+  int valorDuracaoStr = atoi(duracaoStr), tamanhoDuracaoStr = strlen(duracaoStr);
 
   sscanf(horaInicio,"%d:%d:%d", &horaIrrigacao, &minutoIrrigacao, &segundoIrrigacao);
 
@@ -197,12 +181,19 @@ void conversorDeHorario(){
 
   sprintf(resposta, "%02d:%02d:%02d", horas, minutos, segundos);
 
-  Serial.println(resposta);
   return;
 }
 
 void formatarLcd() {
-  if (menuAtivo) return;
+  if (interfaceAtual == MENU || voltarParaProgramada) return;
+  unsigned long tempoAtualParaFormatar = millis();
+  long comparacaoDeValores = tempoAtualParaFormatar - ultimoTempoFormatar;
+
+  if (comparacaoDeValores < intervaloAgenda) {
+    return;
+  }
+  
+  ultimoTempoFormatar = tempoAtualParaFormatar;
 
   int cmpData = strcmp(buffer, dataHoje);
 
@@ -213,18 +204,21 @@ void formatarLcd() {
       strcmp(ultimoBuffer, buffer) == 0 &&
       strcmp(ultimaHora, horaInicio) == 0 &&
       strcmp(ultimaDuracao, duracaoStr) == 0 &&
-      ultimoMenuAtivo == menuAtivo) 
-      {
-      return;
-  } else {
-    strcpy(ultimaData, dataHoje);
-    strcpy(ultimoBuffer, buffer);
-    strcpy(ultimaHora, horaInicio);
-    strcpy(ultimaDuracao, duracaoStr);
-    ultimoMenuAtivo = menuAtivo;
-  }
-
-  if (cmpData < 0 || (cmpData == 0 && estadoAtual == OCIOSO && strcmp(horaInicio, horaAgora) < 0)) {
+      ultimaInterfaceAtual == interfaceAtual && 
+      strcmp(ultimoBufferParado, bufferParado) == 0 &&
+      ultimoEstadoBotao == estadoBotao) return;
+  
+  strcpy(ultimoBufferParado, bufferParado);
+  strcpy(ultimaData, dataHoje);
+  strcpy(ultimoBuffer, buffer);
+  strcpy(ultimaHora, horaInicio);
+  strcpy(ultimaDuracao, duracaoStr);
+  ultimaInterfaceAtual = interfaceAtual;
+  strcpy(ultimoBufferParado, bufferParado);
+  ultimoEstadoBotao = estadoBotao;
+  
+  if ((cmpData < 0 && interfaceAtual == PROGRAMADA) ||
+     (cmpData == 0 && estadoAtual == OCIOSO && strcmp(horaInicio, horaAgora) < 0 && interfaceAtual == PROGRAMADA)) {
     lcd.setCursor(0, 2);
     lcd.print("----/--/--");
     lcd.setCursor(12, 2);
@@ -232,95 +226,109 @@ void formatarLcd() {
     lcd.setCursor(0, 3);
     lcd.print("Em espera   --:--:--");
   } 
-  else if (cmpData >= 0 && estadoAtual == OCIOSO) {
+  else if ((cmpData >= 0 && estadoAtual == OCIOSO && interfaceAtual == PROGRAMADA) || (estadoAtual == OCIOSO && interfaceAtual == IRRIGACAO_FORCADA)) {
     lcd.setCursor(0, 2);
     lcd.print(buffer);
     lcd.setCursor(12, 2);
     lcd.print(horaInicio);
-    lcd.setCursor(0, 3);
+    
+    lcd.setCursor(0,3);
+    
+    if (estadoBotao == 1) {
+    lcd.print("REGA DIA OFF"); 
+    } else {
     lcd.print("Em espera   ");
+    }
+
     conversorDeHorario();
     lcd.print(resposta);
   } 
-  else if (cmpData == 0 && estadoAtual == REGANDO) {
+  else if (estadoAtual == REGANDO && interfaceAtual == PROGRAMADA) {
     lcd.setCursor(0, 3);
-    lcd.print("Regando         ");
+    lcd.print("Regando     ");
+  }
+  else if (estadoAtual == REGANDO && interfaceAtual == IRRIGACAO_FORCADA) {
+    lcd.setCursor(0, 2);  lcd.print(buffer);
+    lcd.setCursor(12, 2); lcd.print(horaInicio);
+    lcd.setCursor(0, 3);  lcd.print("Regando     ");
+    conversorDeHorario();
+    lcd.print(resposta);
   }
 }
 
 void verificarAgenda() {
   unsigned long tempoAtualAgenda = millis();
-  if (tempoAtualAgenda - ultimoTempoAgenda < intervaloAgenda) {
-    return; 
-  }
+  if (tempoAtualAgenda - ultimoTempoAgenda < intervaloAgenda) return;
   ultimoTempoAgenda = tempoAtualAgenda;
 
   lerArquivo();
-  proximaIrrigacao();
 
   if (buffer[0] != '\0' && strcmp(buffer, dataHoje) == 0) {
-      
-      if (horaInicio[0] != '\0' && strcmp(horaInicio, horaAgora) == 0) {
+      if (estadoBotao == true && interfaceAtual == PROGRAMADA) return;
+
+      if (horaInicio[0] != '\0' && strcmp(horaInicio, horaAgora) <= 0) {
         int tempoRega = atoi(duracaoStr);
-        Serial.println(tempoRega);
-        if (tempoRega > 0) {
+        if (tempoRega > 0 && estadoAtual == OCIOSO) {
           executarRega(tempoRega);
           return;
         }
-      } else if (horaInicio[0] != '\0') {
+      } 
+      else if (horaInicio[0] != '\0') {
         char horaCopia[9];
         strcpy(horaCopia, horaInicio);
         
-        char* hora = strtok(horaCopia,":");
-        char* minutos = strtok(NULL,":");
+        char* hora     = strtok(horaCopia,":");
+        char* minutos  = strtok(NULL,":");
         char* segundos = strtok(NULL,":");
 
         if (hora && minutos && segundos) {
-          if ((long)(atoi(hora) * 3600L) + (long)(atoi(minutos) * 60L) + (atoi(segundos)) - ((agora.hour()) * 3600L) - ((agora.minute()) * 60L) - (agora.second()) <= 2) {
-            Serial.println("SOLENOIDE LIBERADO");
-            digitalWrite(Solenoide, HIGH); 
-            estadoSolenoide = LIGADO;
-          }
+          long diffSeg = ((long)atoi(hora) * 3600L + (long)atoi(minutos) * 60L + atoi(segundos))
+                       - ((long)agora.hour() * 3600L + (long)agora.minute() * 60L + agora.second());
+        if (diffSeg >= 0 && diffSeg <= 2 && estadoSolenoide == DESLIGADO) {
+          Serial.println("SOLENOIDE LIBERADO (pre-abertura)");
+          digitalWrite(Solenoide, HIGH);
+          estadoSolenoide = LIGADO;
         }
       }
+    }
   }
+  proximaIrrigacao();
 }
 
 void proximaIrrigacao() {
-  if (strcmp(buffer, dataHoje) < 0){
-      return;
-  }
-  
-  size_t posicao = conteudoDaLinha.find(',');
-  posicao++;
-  size_t posVirgulaDuracao;
-  do {
-    size_t posVirgulaHora = conteudoDaLinha.find(',', posicao);
-    size_t tamanhoHora = posVirgulaHora - posicao; // Talvez retiravel?
-    strncpy(horaInicio, conteudoDaLinha.c_str() + posicao, tamanhoHora);
-    horaInicio[tamanhoHora] = '\0'; // Talvez retiravel?
-
-    posicao = posVirgulaHora + 1;
-    posVirgulaDuracao = conteudoDaLinha.find(',', posicao);
-    size_t tamanhoDuracao = 4;
-    strncpy(duracaoStr, conteudoDaLinha.c_str() + posicao, tamanhoDuracao);
-    duracaoStr[tamanhoDuracao] = '\0'; // Terminador nulo
-
-    if (posVirgulaDuracao != std::string::npos) {
-        posicao = posVirgulaDuracao + 1;
+  if (interfaceAtual == PROGRAMADA){
+    if (strcmp(buffer, dataHoje) < 0){
+        return;
     }
     
-    if (strcmp(buffer, dataHoje) > 0){
-      break;
-  }
+    size_t posicao = conteudoDaLinha.find(',');
+    posicao++;
+    size_t posVirgulaDuracao;
+    do {
+      size_t posVirgulaHora = conteudoDaLinha.find(',', posicao);
+      size_t tamanhoHora = posVirgulaHora - posicao; // Talvez retiravel?
+      strncpy(horaInicio, conteudoDaLinha.c_str() + posicao, tamanhoHora);
+      horaInicio[tamanhoHora] = '\0'; // Talvez retiravel?
 
-  } while (posVirgulaDuracao != std::string::npos && strcmp(horaInicio, horaAgora) < 0 );
+      posicao = posVirgulaHora + 1;
+      posVirgulaDuracao = conteudoDaLinha.find(',', posicao);
+      size_t tamanhoDuracao = 4;
+      strncpy(duracaoStr, conteudoDaLinha.c_str() + posicao, tamanhoDuracao);
+      duracaoStr[tamanhoDuracao] = '\0'; // Terminador nulo
+
+      if (posVirgulaDuracao != std::string::npos) {
+          posicao = posVirgulaDuracao + 1;
+      }
+      
+      if (strcmp(buffer, dataHoje) > 0) break;
+
+    } while (posVirgulaDuracao != std::string::npos && strcmp(horaInicio, horaAgora) < 0 );
 
 
-  // SE PA ESSE HORAINICI'O NUNCA VAI SER NULL, mas fazer oq
-  if (horaInicio[0] == '\0' || strcmp(horaInicio, horaAgora) < 0) {
-    if (estadoAtual == OCIOSO) {
-      indicadorDiaTerminado = true;
+    if (horaInicio[0] == '\0' || strcmp(horaInicio, horaAgora) < 0) {
+      if (estadoAtual == OCIOSO) {
+        indicadorDiaTerminado = true;
+      }
     }
   }
 }
@@ -330,39 +338,56 @@ void executarRega(int segundos) {
     return;
   }
 
+  duracaoRega = segundos * 1000UL;
+
   if (estadoSolenoide == DESLIGADO){
     Serial.println("SOLENOIDE LIBERADO");
     digitalWrite(Solenoide, HIGH);
     estadoSolenoide = LIGADO;
+    estadoAtual = ABRINDO_SOLENOIDE;
+  } else {
+    Serial.println("BOMBA LIGADA");
+    digitalWrite(Bomba, HIGH);
+    estadoBomba = LIGADO;
+    tempoInicio = millis();
+    inicioDaRega = rtc.now();
+    estadoAtual = REGANDO;
   }
-
-  Serial.println("BOMBA LIGADA");
-  digitalWrite(Bomba, HIGH);
-  estadoBomba = LIGADO;
-
-  tempoInicio = millis();
-  duracaoRega = segundos * 1000UL;
-  estadoAtual = REGANDO;
 }
 
 void gerenciarRega(){
-  switchBotao();
-  formatarLcd();
+  alternarBotao();
 
-  if (menuAtivo == true) return;
+  if (interfaceAtual == MENU) return;
 
-  if (estadoBotao == 1) {
-    lcd.setCursor(0,3);
-    lcd.print("REGA DIA OFF");
-    return;
+  // Caso tenha passado um dia
+  if (strcmp(bufferParado, dataHoje) != 0 && estadoBotao == true) {
+    estadoBotao = !estadoBotao;
   }
+  else if (estadoBotao == 0 && estadoAtual == OCIOSO) return;
   
   unsigned long tempoAtual = millis();
-  if (estadoAtual == REGANDO) {
-    if (tempoAtual - tempoInicio >= duracaoRega) {
+  if (estadoAtual == ABRINDO_SOLENOIDE) {
+    if (estadoBotao) {
+      estadoAtual = ESPERANDO_SOLENOIDE;
+      tempoInicio = tempoAtual;
+      return;
+    }
+    if (tempoAtual - tempoInicio >= atrasoSolenoide) {
+      Serial.println("BOMBA LIGADA");
+      digitalWrite(Bomba, HIGH);
+      estadoBomba = LIGADO;
+      tempoInicio = tempoAtual;
+      estadoAtual = REGANDO;
+    }
+  }
+  else if (estadoAtual == REGANDO) {
+    if (tempoAtual - tempoInicio >= duracaoRega || estadoBotao == true) {
       digitalWrite(Bomba, LOW);
       Serial.println("BOMBA DESLIGADA");
   
+      registrarLogRegaConcluida();
+
       tempoInicio = tempoAtual;
       estadoBomba = DESLIGADO;
       estadoAtual = ESPERANDO_SOLENOIDE;
@@ -376,16 +401,49 @@ void gerenciarRega(){
         estadoSolenoide = DESLIGADO;
       }
       estadoAtual = OCIOSO;
+      if (interfaceAtual == IRRIGACAO_FORCADA && regaForcadaAtiva) {atualizarProximaIrrigacaoForcada(); }
+      strcpy(ultimoBuffer, "1900/01/01");
     }
   }
 }
 
-void lerArquivo(){
-  if (menuAtivo == true) return;
+void registrarLogRegaConcluida() {
+  DateTime fimDaRega = rtc.now();
+  
+  TimeSpan duracaoReal = fimDaRega - inicioDaRega;
 
-  if((strcmp(buffer, dataHoje) > 0) || (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false)){
-    return;
+  File logFile = SD.open("/logdata.txt", FILE_WRITE);
+  if (logFile) {
+    char linhaLog[100];
+    
+    sprintf(linhaLog, "%04d/%02d/%02d, Inicio: %02d:%02d:%02d, Fim: %02d:%02d:%02d, Duracao: %ld seg\n", 
+            inicioDaRega.year(), inicioDaRega.month(), inicioDaRega.day(),
+            inicioDaRega.hour(), inicioDaRega.minute(), inicioDaRega.second(),
+            fimDaRega.hour(), fimDaRega.minute(), fimDaRega.second(),
+            duracaoReal.totalseconds());
+            
+    logFile.print(linhaLog);
+    logFile.close();
+    
+    Serial.print("Log registrado: ");
+    Serial.print(linhaLog);
+  } else {
+    Serial.println("ERRO: Falha ao abrir /logdata.txt para salvar o log.");
   }
+}
+
+void lerArquivo(){
+  if (interfaceAtual != PROGRAMADA) return;
+
+  if (estadoDeLeitura == false){
+    if ((strcmp(buffer, dataHoje) > 0) ||
+       (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false)){
+      return;
+    }
+  } else {
+    estadoDeLeitura = false;
+  }
+
 
   if (!SD.exists("/data.txt")) {
     f = SD.open("/data.txt", FILE_WRITE);
@@ -396,7 +454,7 @@ void lerArquivo(){
       Serial.println("Erro ao criar data.txt");
     }
   }
-
+    
   f = SD.open("/data.txt");
   if(f) {
     digitalWrite(33, HIGH);
@@ -416,13 +474,9 @@ void lerArquivo(){
           indicadorDiaTerminado = false;
           continue;
         }
-      if (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false) {
-        break;
-      } 
-
-      if (strcmp(buffer, dataHoje) > 0){
-        break; 
-      }
+      
+      if (strcmp(buffer, dataHoje) == 0 && indicadorDiaTerminado == false) break;
+      if (strcmp(buffer, dataHoje) > 0) break;
     }
     digitalWrite(33, LOW);
     f.close();
@@ -431,94 +485,98 @@ void lerArquivo(){
   }
 }
 
-void switchBotao(){
+void alternarBotao(){
   gerenciarMenu();
+
   if (botaoTravar.foiClicado()) {
     estadoBotao = !estadoBotao;
+    if (estadoBotao) {
+      strcpy(bufferParado, dataHoje);
+    } 
+    Serial.println("botaoTravar acionado");
+    Serial.println(estadoBotao);
   }
 
-  if (botaoMenu.foiClicado() && menuAtivo == false) {
-    Serial.println("Entrando no menu");
-    menu();
+  if (botaoMenu.foiClicado() && interfaceAtual == PROGRAMADA) {
+    menu(); 
+  }
+  if (botaoMenu.foiClicado() && interfaceAtual == IRRIGACAO_FORCADA){
+    if (!voltarParaProgramada) {voltarParaProgramada = true; }
+    if (voltarParaProgramada) {
+      tempoVoltarProgramada = millis();
+    }
+    Serial.println(voltarParaProgramada);
+    // FAZER BOTAO PARA  VOLTAR
+  } 
+
+  if(botaoLerSd.foiClicado() && interfaceAtual == PROGRAMADA){
+    Serial.println("botaoLerSd clicado");
+    estadoDeLeitura = !estadoDeLeitura;
+    Serial.println(estadoDeLeitura);
   }
 
   if (botaoCima.foiClicado()) {
-    Serial.println("botaoCima clicado");
-      if (menuSelecionado != 0) {
-      menuSelecionado--;
-      }
+    if (menuSelecionado != 0) menuSelecionado--;
     
   }
   if (botaoBaixo.foiClicado()) {
-    Serial.println("botaoBaixo clicado");
-    if (menuSelecionado != 3) {
-    menuSelecionado++;
-    }
+    if (menuSelecionado != 3) menuSelecionado++;
   }
-  return;
 }
 
 void menu(){
-  menuAtivo = true;
+  interfaceAtual = MENU;
   menuSelecionado = 0;
-  duracaoRegaForcado = 30; // Tempo padrão -> 30m
+  duracaoRegaForcado = 30; // Tempo padrão ->f 30m
   horaRegaForcado = 1; // Tempo padrão -> 1h
   duracaoJaSelecionada = false;
 
   lcd.clear();
-  lcd.setCursor(7,0);
-  lcd.print("Voltar");
-  lcd.setCursor(2,1);
-  lcd.print("^");
-  lcd.setCursor(1,2);
-  lcd.print("30m de irrigacao");
-  lcd.setCursor(2,3);
-  lcd.print("v");
-  return;
+  lcd.setCursor(7,0); lcd.print("Voltar");
+  lcd.setCursor(2,1); lcd.print("^");
+  lcd.setCursor(1,2); lcd.print("30m de irrigacao");
+  lcd.setCursor(2,3); lcd.print("v");
 }
 
 void gerenciarMenu(){
-  if (!menuAtivo) return;
+  if (voltarParaProgramada) {
+    lcd.clear();
+    lcd.setCursor(0, 0); lcd.print("Aperte novamente");
+    lcd.setCursor(0, 1); lcd.print("para voltar para as");
+    lcd.setCursor(0, 2); lcd.print("irrigacoes do SD");
+
+    if (tempoVoltarProgramada - tempoAnteriorVoltarProgramada < 5000) {
+      voltarParaProgramada = false;
+    }
+    tempoAnteriorVoltarProgramada = tempoVoltarProgramada;
+  }
+
+  if (interfaceAtual != MENU) return;
+
   switch(menuSelecionado){
     case 0:
-      lcd.setCursor(0,0);
-      lcd.print(">");
-      lcd.setCursor(0,1);
-      lcd.print(" ");
-      lcd.setCursor(0,2);
-      lcd.print(" ");
-      lcd.setCursor(0,3);
-      lcd.print(" ");
+      lcd.setCursor(0,0); lcd.print(">");
+      lcd.setCursor(0,1); lcd.print(" ");
+      lcd.setCursor(0,2); lcd.print(" ");
+      lcd.setCursor(0,3); lcd.print(" ");
       break;
     case 1:
-      lcd.setCursor(0,0);
-      lcd.print(" ");
-      lcd.setCursor(0,1);
-      lcd.print(">");
-      lcd.setCursor(0,2);
-      lcd.print(" ");
-      lcd.setCursor(0,3);
-      lcd.print(" ");
+      lcd.setCursor(0,0); lcd.print(" ");
+      lcd.setCursor(0,1); lcd.print(">");
+      lcd.setCursor(0,2); lcd.print(" ");
+      lcd.setCursor(0,3); lcd.print(" ");
       break;
     case 2:
-      lcd.setCursor(0,0);
-      lcd.print(" ");
-      lcd.setCursor(0,1);
-      lcd.print(" ");
-      lcd.setCursor(0,2);
-      lcd.print(">");
-      lcd.setCursor(0,3);
-      lcd.print(" ");
+      lcd.setCursor(0,0); lcd.print(" ");
+      lcd.setCursor(0,1); lcd.print(" ");
+      lcd.setCursor(0,2); lcd.print(">");
+      lcd.setCursor(0,3); lcd.print(" ");
       break;
     case 3:
-      lcd.setCursor(0,0);
-      lcd.print(" ");
-      lcd.setCursor(0,1);
-      lcd.print(" ");
-      lcd.setCursor(0,2);
-      lcd.print(" ");
-      lcd.setCursor(0,3);
-      lcd.print(">");
+      lcd.setCursor(0,0); lcd.print(" ");
+      lcd.setCursor(0,1); lcd.print(" ");
+      lcd.setCursor(0,2); lcd.print(" ");
+      lcd.setCursor(0,3); lcd.print(">");
       break;
     default:
       menuSelecionado = 0;
@@ -526,55 +584,47 @@ void gerenciarMenu(){
   }
 
   if (botaoMenu.foiClicado()){
-    if (menuSelecionado == 0 && duracaoJaSelecionada == false) {
+    if (menuSelecionado == 0 && !duracaoJaSelecionada) {
       lcd.clear();
-      menuAtivo = false;
-      strcpy(ultimaData, "2000/01/01");
+      interfaceAtual = PROGRAMADA;
+      strcpy(ultimoBuffer, "1900/01/01");
+      estadoDeLeitura = !estadoDeLeitura;
       return;
     }
 
-    if (menuSelecionado == 0 && duracaoJaSelecionada == true) {
+    if (menuSelecionado == 0 && duracaoJaSelecionada) {
       lcd.clear();
-      lcd.setCursor(7,0);
-      lcd.print("Voltar");
-      lcd.setCursor(2,1);
-      lcd.print("^");
-      lcd.setCursor(2,3);
-      lcd.print("v");
-      lcd.setCursor(13,1);
-      lcd.print(" ");
-      lcd.setCursor(13,3);
-      lcd.print(" ");
-      lcd.setCursor(1,2);
+      lcd.setCursor(7,0);  lcd.print("Voltar");
+      lcd.setCursor(2,1);  lcd.print("^");
+      lcd.setCursor(2,3);  lcd.print("v");
+      lcd.setCursor(13,1); lcd.print(" ");
+      lcd.setCursor(13,3); lcd.print(" ");
+      lcd.setCursor(1,2); 
       lcd.print(duracaoRegaForcado);
       lcd.print("m de irrigacao");
       duracaoJaSelecionada = false;
+      return;
     }
-
-    else if (menuSelecionado == 1 && duracaoJaSelecionada == false){
-      duracaoRegaForcado += 30;
+    else if (menuSelecionado == 1 && !duracaoJaSelecionada) {
+      duracaoRegaForcado += 15;
       lcd.setCursor(1,2);
       lcd.print(duracaoRegaForcado);
       lcd.print("m de irrigacao   ");
     }
-    else if (menuSelecionado == 3 && duracaoJaSelecionada == false && duracaoRegaForcado > 30){
-      duracaoRegaForcado += -30;
+    else if (menuSelecionado == 3 && !duracaoJaSelecionada && duracaoRegaForcado > 15) {
+      duracaoRegaForcado -= 15;
       lcd.setCursor(1,2);
       lcd.print(duracaoRegaForcado);
       lcd.print("m de irrigacao   ");
     }
     
-    else if (menuSelecionado == 2 && duracaoJaSelecionada == false) {
+    else if (menuSelecionado == 2 && !duracaoJaSelecionada) {
       duracaoJaSelecionada = true;
-      lcd.setCursor(2,1);
-      lcd.print(" ");
-      lcd.setCursor(2,3);
-      lcd.print(" ");
-      lcd.setCursor(13,1);
-      lcd.print("^");
-      lcd.setCursor(13,3);
-      lcd.print("v");
-      lcd.setCursor(1,2);
+      lcd.setCursor(2,1);  lcd.print(" ");
+      lcd.setCursor(2,3);  lcd.print(" ");
+      lcd.setCursor(13,1); lcd.print("^");
+      lcd.setCursor(13,3); lcd.print("v");
+      lcd.setCursor(1,2);  
       lcd.print("                   ");
       lcd.setCursor(6,2);
       lcd.print("a cada ");
@@ -582,62 +632,67 @@ void gerenciarMenu(){
       lcd.print("h");
     }
 
-    else if (menuSelecionado == 1 && duracaoJaSelecionada == true){
+    else if (menuSelecionado == 1 && duracaoJaSelecionada){
       horaRegaForcado += 1;
-      lcd.setCursor(6,2);
+      lcd.setCursor(6, 2);
       lcd.print("a cada ");
       lcd.print(horaRegaForcado);
       lcd.print("h   ");
     }
-    else if (menuSelecionado == 3 && duracaoJaSelecionada == true && horaRegaForcado > 0){
-      horaRegaForcado += -1;
+    else if (menuSelecionado == 3 && duracaoJaSelecionada && horaRegaForcado > 0){
+      horaRegaForcado -= 1;
       lcd.setCursor(6,2);
       lcd.print("a cada ");
       lcd.print(horaRegaForcado);
       lcd.print("h  ");
     }
-    else if (menuSelecionado == 2 && duracaoJaSelecionada == true) {
-      executarIrrigacaoForcada();
+    else if (menuSelecionado == 2 && duracaoJaSelecionada) {
+      interfaceAtual = IRRIGACAO_FORCADA;
+      estadoAtual = OCIOSO;
+      lcd.clear();
+
+      duracaoEmSegundos = duracaoRegaForcado * 60;
+      duracaoRega = duracaoRegaForcado * 60;
+      //duracaoEmSegundos = 5; // deixar so por agora
+
+      agora = rtc.now();
+      DateTime tempoFuturo = agora + TimeSpan(0, 0, 0, 10);
+      
+      char novaHora[9];
+      char novaData[11];
+      
+      snprintf(novaHora, sizeof(novaHora), "%02d:%02d:%02d", tempoFuturo.hour(), tempoFuturo.minute(), tempoFuturo.second());
+      snprintf(novaData, sizeof(novaData), "%04d/%02d/%02d", tempoFuturo.year(), tempoFuturo.month(), tempoFuturo.day());
+      
+      strcpy(buffer, novaData); 
+      strcpy(horaInicio, novaHora);
+
+      if (horaRegaForcado != 0) {
+        agora = rtc.now();
+        regaForcadaAtiva = true;
+        ultimoTempoRegaForcada = agora.unixtime();
+      }
     }
   }
   return;
 }
 
-void executarIrrigacaoForcada() {
-  lcd.clear();
-  Serial.println("SOLENOIDE LIBERADO");
-  digitalWrite(Solenoide, HIGH); 
-  estadoSolenoide = LIGADO;
-  delay(atrasoSolenoide);
-
-  int duracaoEmSegundos = duracaoRegaForcado * 60;
-  executarRega(duracaoEmSegundos);
+void atualizarProximaIrrigacaoForcada() {
+  duracaoEmSegundos   = duracaoRegaForcado * 60;
+  //duracaoEmSegundos   = 10;
+  intervaloEmSegundos = (uint32_t)horaRegaForcado * 3600UL;
+  //intervaloEmSegundos = 20; // ================= APENAS PARA DEBUG
 
   agora = rtc.now();
-  if (horaRegaForcado != 0) {
+  Serial.println(intervaloEmSegundos);
+  DateTime tempoFuturo = agora + TimeSpan(0, 0, 0, intervaloEmSegundos);
 
-  regaForcadaAtiva = true;
-  ultimoTempoRegaForcada = agora.unixtime();
+  char novaHora[9], novaData[11];
+  snprintf(novaHora, sizeof(novaHora), "%02d:%02d:%02d", tempoFuturo.hour(), tempoFuturo.minute(), tempoFuturo.second());
+  snprintf(novaData, sizeof(novaData), "%04d/%02d/%02d", tempoFuturo.year(), tempoFuturo.month(), tempoFuturo.day());
 
-  Serial.print("Irrigacao forcada iniciada! Duracao: ");
-  Serial.print(duracaoRegaForcado);
-  Serial.print(" min | Repeticao a cada: ");
-  Serial.print(horaRegaForcado);
-  Serial.println(" h");
-  }
-}
-
-void verificarRegaForcada() {
-  if (!regaForcadaAtiva) {
-    return; 
-  }
-
-  agora = rtc.now();
-  uint32_t tempoAtual = agora.unixtime();
-  uint32_t intervaloEmSegundos = horaRegaForcado * 3600UL;
-
-  if ((tempoAtual - ultimoTempoRegaForcada) >= intervaloEmSegundos) {
-    ultimoTempoRegaForcada = tempoAtual;
-    executarIrrigacaoForcada();
-  }
+  strcpy(buffer, novaData);
+  strcpy(horaInicio, novaHora);
+  snprintf(duracaoStr, sizeof(duracaoStr), "%d", duracaoEmSegundos);
+  strcpy(ultimoBuffer, "1900/01/01");
 }
